@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io/ioutil"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +21,7 @@ var (
 	commitDates = flag.String("commit-dates", "", "file containing `git log --format=\"format:%H,%cD\" --date-order`")
 	metricName  = flag.String("metric", "ns/op", "metric to fetch")
 	regex       = flag.String("regex", ".", "benchmarks to include")
+	relative    = flag.Bool("relative", false, "whether to use relative results")
 )
 
 const rfc2822 = "Mon, 2 Jan 2006 15:04:05 -0700"
@@ -31,6 +33,11 @@ const rfc2822 = "Mon, 2 Jan 2006 15:04:05 -0700"
 // * go run main.go --commit-dates=/tmp/bench/commits /tmp/bench/*.txt
 func main() {
 	flag.Parse()
+
+	goodDataStart, err := time.Parse("2006-01-02", "2020-07-18")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	reg := regexp.MustCompile(*regex)
 
@@ -47,6 +54,7 @@ func main() {
 	}
 
 	commitToDate := map[string]time.Time{}
+	dateToCommit := map[time.Time]string{}
 	for _, l := range strings.Split(string(f), "\n") {
 		if len(l) == 0 {
 			continue
@@ -60,6 +68,7 @@ func main() {
 			log.Fatalf("failed to parse from %v: %v\n", l, err)
 		}
 		commitToDate[spl[0]] = tm
+		dateToCommit[tm] = spl[0]
 	}
 	files := flag.Args()
 	for _, file := range files {
@@ -89,6 +98,10 @@ func main() {
 					continue
 				}
 				date := fileToDate(files[i])
+				// Todo make this configurable
+				if date.Before(goodDataStart) {
+					continue
+				}
 				result := Result{Name: row.Benchmark, Date: date, Nanoseconds: metric.Mean}
 				if _, f := results[row.Benchmark]; !f {
 					results[row.Benchmark] = map[time.Time]Result{}
@@ -118,16 +131,42 @@ func main() {
 		return dateKeys[i].Before(dateKeys[j])
 	})
 
-	w := csv.NewWriter(os.Stdout)
-	w.Write(append([]string{"Date"}, testKeys...))
+	firstResult := map[string]float64{}
 	for _, date := range dateKeys {
-		row := []string{date.String()}
 		for _, test := range testKeys {
-			row = append(row, strconv.FormatFloat(results[test][date].Nanoseconds, 'f', -1, 64))
+			if _, f := firstResult[test]; f {
+				continue
+			}
+			if almostEqual(results[test][date].Nanoseconds, 0) {
+				continue
+			}
+			firstResult[test] = results[test][date].Nanoseconds
+		}
+	}
+
+	w := csv.NewWriter(os.Stdout)
+	w.Write(append([]string{"SHA", "Date"}, testKeys...))
+	for _, date := range dateKeys {
+		row := []string{dateToCommit[date], date.String()}
+		for _, test := range testKeys {
+			res := results[test][date].Nanoseconds
+			if *relative {
+				res = res / firstResult[test]
+				if almostEqual(res, 0) {
+					res = 1
+				}
+			}
+			row = append(row, strconv.FormatFloat(res, 'f', -1, 64))
 		}
 		w.Write(row)
 	}
 	w.Flush()
+}
+
+const float64EqualityThreshold = 1e-8
+
+func almostEqual(a, b float64) bool {
+	return math.Abs(a-b) <= float64EqualityThreshold
 }
 
 type Result struct {
