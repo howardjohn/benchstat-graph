@@ -22,6 +22,7 @@ var (
 	metricName  = flag.String("metric", "ns/op", "metric to fetch")
 	regex       = flag.String("regex", ".", "benchmarks to include")
 	relative    = flag.Bool("relative", false, "whether to use relative results")
+	rolling     = flag.Int("rolling", 0, "number of previous commits to compare to")
 )
 
 const rfc2822 = "Mon, 2 Jan 2006 15:04:05 -0700"
@@ -143,6 +144,7 @@ func main() {
 			firstResult[test] = results[test][date].Nanoseconds
 		}
 	}
+	rollingResults := map[string][]float64{}
 
 	w := csv.NewWriter(os.Stdout)
 	w.Write(append([]string{"SHA", "Date"}, testKeys...))
@@ -155,6 +157,18 @@ func main() {
 				if almostEqual(res, 0) {
 					res = 1
 				}
+			} else if *rolling > 0 {
+				if len(rollingResults[test]) > 0 {
+					res = res / avg(rollingResults[test])
+				} else {
+					res = 1
+				}
+				if !almostEqual(results[test][date].Nanoseconds, 0) {
+					rollingResults[test] = append(rollingResults[test], results[test][date].Nanoseconds)
+					if len(rollingResults[test]) == *rolling {
+						rollingResults[test] = rollingResults[test][1:]
+					}
+				}
 			}
 			row = append(row, strconv.FormatFloat(res, 'f', -1, 64))
 		}
@@ -164,6 +178,14 @@ func main() {
 }
 
 const float64EqualityThreshold = 1e-8
+
+func avg(a []float64) float64 {
+	var sum float64 = 0
+	for _, i := range a {
+		sum += i
+	}
+	return sum / float64(len(a))
+}
 
 func almostEqual(a, b float64) bool {
 	return math.Abs(a-b) <= float64EqualityThreshold
